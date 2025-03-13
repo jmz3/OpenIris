@@ -38,6 +38,7 @@ namespace OpenIris
         private readonly Consumer<EyeTrackerEvent> eventRecorder;
 
         private EyeCollection<VideoWriter?>? rawVideoWriters;
+        private EyeCollection<VideoWriter?>? rawVideoWritersMP4;
         private VideoWriter? processedVideoWriter;
         private StreamWriter? eventFile;
         private StreamWriter? dataFile;
@@ -324,6 +325,8 @@ namespace OpenIris
         {
             if (imagesEye.images == null) throw new ArgumentNullException(nameof(imagesEye));
 
+            // Trace.WriteLine("RecordGrabbedImages called at frame number: " + imagesEye.images.GetFrameNumber());
+
             if (!options.SaveRawVideo) return false;
             
             // Create the videowriters the first time an image is consumed This is better so the set
@@ -346,6 +349,22 @@ namespace OpenIris
 
                 rawVideoWriters[image.WhichEye]?.Write(image.Image.Mat);
             }
+
+            rawVideoWritersMP4 ??= new EyeCollection<VideoWriter?>(
+                imagesEye.images.Select(im => (im is null) ? null :
+                    new VideoWriter(
+                       fileName: DataFileName.Replace(".txt", "-" + im.WhichEye + ".mp4"),
+                       compressionCode: VideoWriter.Fourcc('M', 'P', '4', 'V'),
+                       fps: imagesEye.frameRate / options.DecimateRatioRawVideo,
+                       size: imagesEye.images.GetFrameSize(),
+                       isColor: false)).ToArray());
+            foreach (var image in imagesEye.images)
+            {
+                if (image is null) continue;
+
+                rawVideoWritersMP4[image.WhichEye]?.Write(image.Image.Mat);
+                /*Trace.WriteLine("MP4 Video is saved");*/
+            }
             return true;
         }
 
@@ -367,12 +386,10 @@ namespace OpenIris
             // Save the images to a video file with data overlay
             // 
 
-           // var images = dataAndImages.Images ?? new EyeCollection<ImageEye?>(null, null);
+            // var images = dataAndImages.Images ?? new EyeCollection<ImageEye?>(null, null);
             var processedVideoOptions = options as ProcessedRecordingOptions;
-
             if (processedVideoOptions?.SaveProcessedVideo is true)
             {
-                // Open the video
                 processedVideoWriter ??= new VideoWriter(
                             fileName: DataFileName.Replace(".txt", ".avi"),
                             compressionCode: 0,
@@ -385,6 +402,7 @@ namespace OpenIris
                     .Where(im => im is not null)
                     .Where(im => processedVideoOptions.WhichEye == Eye.Both || im!.WhichEye == processedVideoOptions.WhichEye)
                     .Select(im => (Image: im!.Image.Convert<Bgr, byte>(), im!.EyeData)).ToArray();
+
                 foreach ((var imageColor, var eyeData) in imagesColor)
                 {
                     if (processedVideoOptions.IncreaseContrast) imageColor._EqualizeHist();
@@ -435,12 +453,14 @@ namespace OpenIris
             processedFramesRecorder.Dispose();
             eventRecorder.Dispose();
             rawVideoWriters?.ForEach(v => v?.Dispose());
+            rawVideoWritersMP4?.ForEach(v => v?.Dispose());
             processedVideoWriter?.Dispose();
             eventFile?.Dispose();
             dataFile?.Dispose();
             log?.Dispose();
 
             rawVideoWriters = null;
+            rawVideoWritersMP4 = null;
             processedVideoWriter = null;
             processedVideoWriter = null;
             eventFile = null;
