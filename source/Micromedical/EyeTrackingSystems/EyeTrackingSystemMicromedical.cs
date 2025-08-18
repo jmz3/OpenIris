@@ -20,7 +20,7 @@ namespace OpenIris
     [Export(typeof(EyeTrackingSystemBase)), PluginDescriptionEyeTrackingSystem("Micromedical", typeof(EyeTrackingSystemSettingsMicromedical))]
     public class EyeTrackingSystemMicromedical : EyeTrackingSystemBase
     {
-        private HeadSensorTeensyMPU headSensor;
+        protected HeadSensorTeensyMPU headSensor;
 
         /// <summary>
         /// Gets the cameras. In this case two, left and right eye. 
