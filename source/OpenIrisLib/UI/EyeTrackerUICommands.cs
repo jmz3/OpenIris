@@ -16,6 +16,7 @@ namespace OpenIris
     using System.Windows.Forms;
     using System.Collections.Generic;
     using System.Windows.Input;
+    using System.IO.Ports;
 
     /// <summary>
     /// </summary>
@@ -111,6 +112,11 @@ namespace OpenIris
                         StopRecordingCommand.Execute(sender);
                     else
                         StartRecordingCommand.Execute(sender);
+
+                    // Jeremy Zhang: Add Serial Port Comm
+                    SendSerialOneShot("COM5", 9600, "1", appendNewLine: true);
+                    // Print to debug console
+                    System.Diagnostics.Debug.WriteLine("[Serial] Sent start/stop recording signal to COM5");
                 },
                 canExecute: () => eyeTracker.Tracking && !eyeTracker.PostProcessing && !(eyeTracker.RecordingSession?.Stopping ?? false));
 
@@ -357,5 +363,37 @@ namespace OpenIris
                 }
             }
         }
+
+        // Jeremy Zhang: Add Serial Port Communication for Start/Stop Recording
+        private void SendSerialOneShot(string portName, int baudRate, string payload, bool appendNewLine = true)
+        {
+            try
+            {
+                using (var sp = new SerialPort(portName, baudRate))
+                {
+                    sp.NewLine = "\n";
+                    sp.ReadTimeout = 500;
+                    sp.WriteTimeout = 500;
+                    // Avoid toggling DTR unless you *want* to reset some Arduino boards.
+                    sp.DtrEnable = false;
+                    sp.RtsEnable = false;
+
+                    sp.Open();
+
+                    if (appendNewLine)
+                        sp.WriteLine(payload);
+                    else
+                        sp.Write(payload);
+                }
+            }
+            catch (Exception ex)
+            {
+                // Use your project’s logger if available; otherwise keep it quiet or show once.
+                System.Diagnostics.Debug.WriteLine($"[Serial] send failed: {ex.Message}");
+                // Optionally: MessageBox.Show(...) if you want visible feedback on failure.
+            }
+        }
+
     }
+
 }
