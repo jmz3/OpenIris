@@ -7,15 +7,17 @@ namespace OpenIris
 {
     using System;
     using System.Collections.Generic;
+    using System.ComponentModel;
     using System.ComponentModel.Composition;
     using System.Drawing;
     using OpenIris.ImageGrabbing;
     using OpenIris.HeadTracking;
+    using System.IO.Ports;
 
     /// <summary>
     /// Micromedical system.
     /// </summary>
-    [Export(typeof(EyeTrackingSystemBase)), PluginDescriptionEyeTrackingSystemAttribute("MicromedicalUSB", typeof(EyeTrackingSystemSettingsMicromedical))]
+    [Export(typeof(EyeTrackingSystemBase)), PluginDescriptionEyeTrackingSystemAttribute("MicromedicalUSB", typeof(EyeTrackingSystemSettingsMicromedicalUSB))]
     public class EyeTrackingSystemMicromedicalUSB : EyeTrackingSystemMicromedical
     {
         /// <summary>
@@ -24,7 +26,7 @@ namespace OpenIris
         /// <returns>The list of cameras.</returns>
         protected override EyeCollection<CameraEye> CreateAndStartCameras()
         {
-            var settings = Settings as EyeTrackingSystemSettingsMicromedical;
+            var settings = Settings as EyeTrackingSystemSettingsMicromedicalUSB;
 
             // Default region of interest for Micromedical cameras
             var roi = new Rectangle(176, 112, 400, 260);
@@ -69,10 +71,25 @@ namespace OpenIris
                 cameraLeftEye?.Start();
                 cameraRightEye?.Start();
 
+                // pause to allow camera to start
+                System.Threading.Thread.Sleep(500);
+
                 if (settings.UseHeadSensor)
                 {
-                    headSensor = new HeadSensorTeensyMPU(settings);
-                    headSensor.StartHeadSensorAndSyncWithCamera(cameraRightEye);
+                    System.Diagnostics.Debug.WriteLine("Starting Head Sensor on port " + settings.HeadSensorCOMPort);
+                    headSensor = new HeadSensorSeeednRF52840(settings);
+                    //headSensor.TriggerHeadSensorSyncPulse();
+
+                    //// pause to allow head sensor to start
+                    //System.Threading.Thread.Sleep(5000);
+                    double totalDelay = 0.0;
+                    for (int i = 0; i < 10; i++)
+                    {
+                        totalDelay += headSensor.TestHeadSensorDelay();
+                    }
+                    System.Diagnostics.Debug.WriteLine("Average Head Sensor Delay: " + (totalDelay / 10.0).ToString("F2") + " ms");
+
+                    headSensor.StartHeadSensorAndSyncWithCamera(cameraRightEye, cameraLeftEye);
                 }
 
                 // Return the new cameras
@@ -94,6 +111,70 @@ namespace OpenIris
                 cameraLeftEye?.Dispose();
                 cameraRightEye?.Dispose();
             }
+        }
+
+        /// <summary>
+        /// The head sensor used for tracking head movement and synchronizing with the camera.
+        /// </summary>
+        protected new HeadSensorSeeednRF52840 headSensor;
+
+        /// <summary>
+        /// 
+        /// </summary>
+        public override IHeadDataSource CreateHeadDataSourceWithCameras() => headSensor;
+    }
+
+    /// <summary>
+    /// Settings specific to the MicromedicalUSB system.
+    /// </summary>
+    public class EyeTrackingSystemSettingsMicromedicalUSB : EyeTrackingSystemSettingsMicromedical
+    {
+        /// <summary>
+        /// Initializes a new instance of the EyeTrackingSystemSettingsMicromedicalUSB class.
+        /// </summary>
+        public EyeTrackingSystemSettingsMicromedicalUSB()
+        {
+            // Set any default values specific to USB version
+        }
+
+        /// <summary>
+        /// Gets or sets the COM port ID for the head sensor.
+        /// </summary>
+        public string HeadSensorCOMPort
+        {
+            get
+            {
+                return this.headSensorCOMPort;
+            }
+            set
+            {
+                if (value != this.headSensorCOMPort)
+                {
+                    this.headSensorCOMPort = value;
+                    this.OnPropertyChanged(this, "HeadSensorCOMPort");
+                }
+            }
+        }
+        private string headSensorCOMPort = "COM5";
+
+        /// <summary>
+        /// Hide the UseHeadSensorRotation property from the UI.
+        /// </summary>
+        [Browsable(false)]
+        public new bool UseHeadSensorRotation
+        {
+            get { return base.UseHeadSensorRotation; }
+            set { base.UseHeadSensorRotation = value; }
+        }
+
+        /// <summary>
+        /// Hide the HeadSensorRotation property from the UI.
+        /// </summary>
+        [Browsable(false)]
+        public new double[][] HeadSensorRotation
+        {
+            get { return base.HeadSensorRotation; }
+            set { base.HeadSensorRotation = value; }
         }
     }
 }

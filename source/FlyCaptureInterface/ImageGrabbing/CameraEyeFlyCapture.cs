@@ -219,6 +219,15 @@ namespace OpenIris.ImageGrabbing
         /// </summary>
         public int BufferSize { get; set; }
 
+        /// <summary>
+        /// Gets the timestamp of the last frame.
+        /// </summary>
+        public ImageEyeTimestamp LastTimeStamp
+        {
+            get => lastTimeStamp; // Public getter
+            private set => lastTimeStamp = value; // Private setter
+        }
+
         #endregion public properties
 
         #region Public methods

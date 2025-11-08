@@ -101,6 +101,7 @@
     <Compile Include="EyeTrackingSystems\EyeTrackingSystemMicromedicalUSB.cs" />
     <Compile Include="EyeTrackingSystems\EyeTrackingSystemMicromedical200Hz.cs" />
     <Compile Include="HeadTracking\HeadSensorMicromedicalMeasurmentComputing.cs" />
+    <Compile Include="HeadTracking\HeadSensorSeeednRF52840.cs" />
     <Compile Include="HeadTracking\HeadSensorTeensyMPU.cs" />
     <Compile Include="HeadTracking\HeadSensorMPUFTDI.cs" />
     <Compile Include="HeadTracking\MicroLibrary.cs" />
