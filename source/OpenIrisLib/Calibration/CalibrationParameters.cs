@@ -247,16 +247,6 @@ namespace OpenIris
         }
 
         /// <summary>
-        /// 
-        /// </summary>
-        /// <param name="calibratedEyeData"></param>
-        /// <returns></returns>
-        public double[]? GetRotationVector(CalibratedEyeData calibratedEyeData)
-        {
-            return null;
-        }
-
-        /// <summary>
         /// Gets the calibrated data from the raw data.
         /// </summary>
         /// <param name="headData">Head data.</param>
