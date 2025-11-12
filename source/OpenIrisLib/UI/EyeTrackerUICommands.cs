@@ -119,7 +119,7 @@ namespace OpenIris
                         // Execute head tracker calibration if enabled
                         if (eyeTracker.HeadTracker != null)
                         {
-                            eyeTracker.HeadTracker.StartCalibration();
+                            await eyeTracker.HeadTracker.StartCalibration();
                         }
 
                         // Execute eye tracker calibration

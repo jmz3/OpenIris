@@ -64,6 +64,13 @@ namespace OpenIris
                 // TODO: Implement calibration procedure here
                 // It should take several seconds of data and then take the average
                 // Use the 
+                double count = 0;
+                while (count < 500)
+                {
+                    PokeAndListenHeadSensorOnce();
+                    count++;
+                    Thread.Sleep(10);
+                }
             }
         }
 
@@ -303,7 +310,7 @@ namespace OpenIris
 
         private void PokeAndListenHeadSensorOnce()
         {
-            const string payload = "2\n"; // newline so ReadLine() terminates
+            const string payload = "2\n";
 
             if (serialPort == null || !serialPort.IsOpen)
             {
@@ -317,11 +324,9 @@ namespace OpenIris
 
                 serialPort.Write(payload);
 
-                // Empty the raw data string before reading new data
                 RawDataString = "";
                 RawDataString = serialPort.ReadLine();
 
-                // Update the last valid RawDataString
                 if (!string.IsNullOrEmpty(RawDataString))
                 {
                     lastValidRawDataString = RawDataString;
@@ -331,7 +336,6 @@ namespace OpenIris
             {
                 System.Diagnostics.Debug.WriteLine($"[Serial] Timeout: {ex.Message}");
 
-                // Use the last valid RawDataString in case of a timeout
                 if (lastValidRawDataString != null)
                 {
                     RawDataString = lastValidRawDataString;
