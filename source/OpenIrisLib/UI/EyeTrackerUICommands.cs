@@ -114,7 +114,17 @@ namespace OpenIris
                 canExecute: () => eyeTracker.Tracking && !eyeTracker.PostProcessing && !(eyeTracker.RecordingSession?.Stopping ?? false));
 
             StartCalibrationCommand = new EyeTrackerUICommand(
-                execute: async _ => await eyeTracker.StartCalibration(),
+                    execute: async _ =>
+                    {
+                        // Execute head tracker calibration if enabled
+                        if (eyeTracker.HeadTracker != null)
+                        {
+                            eyeTracker.HeadTracker.StartCalibration();
+                        }
+
+                        // Execute eye tracker calibration
+                        await eyeTracker.StartCalibration();
+                    },
                 canExecute: () => eyeTracker.Tracking && !eyeTracker.Calibrating);
 
             CancelCalibrationCommand = new EyeTrackerUICommand(

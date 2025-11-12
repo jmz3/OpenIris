@@ -13,6 +13,7 @@ namespace OpenIris
     using OpenIris.ImageGrabbing;
     using OpenIris.HeadTracking;
     using System.IO.Ports;
+    using static OpenIris.HeadTracker;
 
     /// <summary>
     /// Micromedical system.
@@ -132,10 +133,7 @@ namespace OpenIris
         /// <summary>
         /// Initializes a new instance of the EyeTrackingSystemSettingsMicromedicalUSB class.
         /// </summary>
-        public EyeTrackingSystemSettingsMicromedicalUSB()
-        {
-            // Set any default values specific to USB version
-        }
+        public EyeTrackingSystemSettingsMicromedicalUSB() { }
 
         /// <summary>
         /// Gets or sets the COM port ID for the head sensor.
@@ -158,23 +156,22 @@ namespace OpenIris
         private string headSensorCOMPort = "COM5";
 
         /// <summary>
-        /// Hide the UseHeadSensorRotation property from the UI.
+        /// Whether to enable dynamic calibration of the head sensor.
         /// </summary>
-        [Browsable(false)]
-        public new bool UseHeadSensorRotation
-        {
-            get { return base.UseHeadSensorRotation; }
-            set { base.UseHeadSensorRotation = value; }
+        public bool CalibrateHeadSensor
+        {             get
+            {
+                return this.calibrateHeadSensor;
+            }
+            set
+            {
+                if (value != this.calibrateHeadSensor)
+                {
+                    this.calibrateHeadSensor = value;
+                    this.OnPropertyChanged(this, "CalibrateHeadSensor");
+                }
+            }
         }
-
-        /// <summary>
-        /// Hide the HeadSensorRotation property from the UI.
-        /// </summary>
-        [Browsable(false)]
-        public new double[][] HeadSensorRotation
-        {
-            get { return base.HeadSensorRotation; }
-            set { base.HeadSensorRotation = value; }
-        }
+        private bool calibrateHeadSensor = false;
     }
 }

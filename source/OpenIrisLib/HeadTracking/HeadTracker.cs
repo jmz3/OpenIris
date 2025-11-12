@@ -217,6 +217,18 @@ namespace OpenIris
                 }
             }
         }
+
+        /// <summary>
+        /// Function to calibrate the head sensor if supported.
+        /// </summary>
+        public void StartCalibration()
+        {
+            if (headDataSource is null) return;
+            if (headDataSource is IHeadSensorCalibrable calibrable)
+            {
+                calibrable.CalibrateHeadSensor();
+            }
+        }
     }
 
     /// <summary>
@@ -234,5 +246,16 @@ namespace OpenIris
         /// Stops the sensor
         /// </summary>
         void Stop();
+    }
+
+    /// <summary>
+    /// Interface for head data sources that support calibration.
+    /// </summary>
+    public interface IHeadSensorCalibrable
+    {
+        /// <summary>
+        /// Calibrates the head sensor.
+        /// </summary>
+        void CalibrateHeadSensor();
     }
 }

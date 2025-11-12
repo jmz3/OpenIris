@@ -609,7 +609,6 @@ namespace OpenIris
         /// Handles a CALIBRATION remote message.
         /// </summary>
         /// <param name="eventMessage">Message associated with the event.</param>
-        /// <param name="data">Data associated with the event.</param>
         /// <returns>The current frame number that will be associated with the event.</returns>
         public string CalibrationMessage(string eventMessage)
         {
