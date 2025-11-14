@@ -14,6 +14,7 @@ namespace OpenIris
     using OpenIris.HeadTracking;
     using System.IO.Ports;
     using static OpenIris.HeadTracker;
+    using Emgu.CV;
 
     /// <summary>
     /// Micromedical system.
@@ -134,6 +135,29 @@ namespace OpenIris
         /// Initializes a new instance of the EyeTrackingSystemSettingsMicromedicalUSB class.
         /// </summary>
         public EyeTrackingSystemSettingsMicromedicalUSB() { }
+
+        /// <summary>
+        /// Gets or sets the rotation matrix of the head sensor.
+        /// </summary>
+        public new double[][] HeadSensorRotation
+        {
+            get
+            {
+                return this.headSensorRotation;
+            }
+            set
+            {
+                if (value != this.headSensorRotation)
+                {
+                    this.headSensorRotation = value;
+                    this.OnPropertyChanged(this, "HeadSensorRotation");
+                }
+            }
+        }
+        private double[][] headSensorRotation = {
+            new double[] { 1.0, 0.0, 0.0 },
+            new double[] { 0.0, 1.0, 0.0 },
+            new double[] { 0.0, 0.0, 1.0 } };
 
         /// <summary>
         /// Gets or sets the COM port ID for the head sensor.

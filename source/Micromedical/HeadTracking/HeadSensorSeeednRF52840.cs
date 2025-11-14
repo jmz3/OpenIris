@@ -11,32 +11,56 @@ namespace OpenIris
 
     using OpenIris.ImageGrabbing;
     using System;
-    using System.Collections.Generic;
+    using System.Collections.Concurrent;
     using System.Diagnostics;
     using System.IO.Ports;
     using System.Linq;
-    using System.Net.Sockets;
     using System.Threading;
-    using System.Threading.Tasks;
+
     /// <summary>
     /// Class to control a motion sensor used together with the micromedical system. The sensor is connected to PC
-    /// through USB COM port
+    /// through USB COM port with continuous streaming at 300Hz
     /// </summary>
     public sealed class HeadSensorSeeednRF52840 : IHeadDataSource, IHeadSensorCalibrable
     {
-        private SerialPort? serialPort; // Private member for the serial port
-        private readonly string comPort; // Private member for the COM port
-        public string RawDataString = "";
+        private SerialPort? serialPort;
+        private readonly string comPort;
 
-        /// <summary>
-        /// Eye tracking system settings.
-        /// </summary>
+        // Thread-safe queue for incoming IMU data
+        private readonly ConcurrentQueue<RawIMUData> dataQueue = new ConcurrentQueue<RawIMUData>();
+        private readonly int maxQueueSize = 600; // 2 seconds at 300Hz
+
+        // Background thread for reading serial data
+        private Thread? readThread;
+        private CancellationTokenSource? cancellationTokenSource;
+
+        // Latest data for GrabHeadData
+        private RawIMUData? latestData;
+        private readonly object latestDataLock = new object();
+
+        // Calibration offsets
+        private double calibrationOffsetX = 0;
+        private double calibrationOffsetY = 0;
+        private double calibrationOffsetZ = 0;
+
         private EyeTrackingSystemSettingsMicromedicalUSB settings;
 
         /// <summary>
-        /// Constructor for Head sensors. 
+        /// Raw IMU data structure
         /// </summary>
-        /// <param name="settings"></param>
+        private class RawIMUData
+        {
+            public ulong SensorFrameCount { get; set; }
+            public double Timestamp { get; set; }
+            public double AccelX { get; set; }
+            public double AccelY { get; set; }
+            public double AccelZ { get; set; }
+            public double GyroX { get; set; }
+            public double GyroY { get; set; }
+            public double GyroZ { get; set; }
+            public DateTime ReceivedTime { get; set; }
+        }
+
         public HeadSensorSeeednRF52840(EyeTrackingSystemSettingsMicromedicalUSB settings)
         {
             this.settings = settings;
@@ -44,141 +68,260 @@ namespace OpenIris
             if (comPortProperty != null)
             {
                 var portValue = comPortProperty.GetValue(settings) as string;
-                comPort = !string.IsNullOrEmpty(portValue) ? portValue! : "COM5"; // Default to "COM5" if not set
+                comPort = !string.IsNullOrEmpty(portValue) ? portValue! : "COM5";
             }
             else
             {
                 comPort = "COM5";
             }
+
             SerialPortInitialize(comPort, 115200);
         }
 
         /// <summary>
-        /// Calibrates the head sensor if the CalibrateHeadSensor setting is enabled.
+        /// Calibrates the head sensor using the last 2 seconds of data
+        /// Constructs a rotation matrix where:
+        /// - The averaged gravity vector becomes the negative x-axis
+        /// - The z-axis is constructed using [-1,0,0] as reference
+        /// - The y-axis completes the orthonormal basis
         /// </summary>
         public void CalibrateHeadSensor()
         {
-            if (settings.CalibrateHeadSensor)
+            if (!settings.CalibrateHeadSensor)
+                return;
+
+            Trace.WriteLine("Starting head sensor calibration.");
+
+            // Wait a bit to accumulate data
+            Thread.Sleep(2500); // 2.5 seconds to ensure we have 2 seconds of data
+
+            // Get all data from queue (last 2 seconds)
+            var calibrationData = dataQueue.ToArray();
+
+            if (calibrationData.Length < 100)
             {
-                Trace.WriteLine("Starting head sensor calibration.");
-                // TODO: Implement calibration procedure here
-                // It should take several seconds of data and then take the average
-                // Use the 
-                double count = 0;
-                while (count < 500)
+                throw new InvalidOperationException("Not enough data for calibration.");
+            }
+
+            // Calculate averages for accelerometer (this is the gravity vector in sensor frame)
+            double[] avg_gravity = new double[3]
+            {
+                calibrationData.Average(d => d.AccelX),
+                calibrationData.Average(d => d.AccelY),
+                calibrationData.Average(d => d.AccelZ)
+            };
+
+            // Construct rotation matrix from averaged gravity vector
+            // Step 1: The averaged gravity vector becomes the new x-axis
+            double mag_avg = VectorMagnitude(avg_gravity);
+
+            if (mag_avg < 0.1)
+            {
+                Trace.WriteLine("ERROR: Averaged gravity vector is too small. Calibration failed.");
+                return;
+            }
+
+            double[] x_new = VectorNormalize(avg_gravity);
+
+            double[] z_ref = new double[] { -1.0, 0.0, 0.0 };
+
+            double[] y_new = VectorCross(z_ref, x_new);
+
+            double y_mag = VectorMagnitude(y_new);
+            if (y_mag < 0.001)
+            {
+                throw new InvalidOperationException("Calibration failed: reference vector is too close to gravity vector.");
+            }
+
+            y_new = VectorNormalize(y_new);
+
+            double[] z_new = VectorCross(x_new, y_new);
+            z_new = VectorNormalize(z_new);
+
+            // Step 5: Construct the rotation matrix
+            // The rotation matrix transforms vectors from sensor frame to body frame
+            settings.HeadSensorRotation = new double[3][];
+            settings.HeadSensorRotation[0] = x_new;
+            settings.HeadSensorRotation[1] = y_new;
+            settings.HeadSensorRotation[2] = z_new;
+
+
+            // Reset calibration offsets since rotation matrix now handles the coordinate transformation
+            calibrationOffsetX = 0;
+            calibrationOffsetY = 0;
+            calibrationOffsetZ = 0;
+
+            Trace.WriteLine("Rotation matrix calculated and applied:");
+            Trace.WriteLine($"  Row 0 (X): [{x_new[0]:F6}, {x_new[1]:F6}, {x_new[2]:F6}]");
+            Trace.WriteLine($"  Row 1 (Y): [{y_new[0]:F6}, {y_new[1]:F6}, {y_new[2]:F6}]");
+            Trace.WriteLine($"  Row 2 (Z): [{z_new[0]:F6}, {z_new[1]:F6}, {z_new[2]:F6}]");
+
+            Trace.WriteLine("Calibration complete.");
+        }
+
+        /// <summary>
+        /// Calculate the magnitude of a 3D vector
+        /// </summary>
+        private double VectorMagnitude(double[] v)
+        {
+            return Math.Sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+        }
+
+        /// <summary>
+        /// Normalize a 3D vector
+        /// </summary>
+        private double[] VectorNormalize(double[] v)
+        {
+            double mag = VectorMagnitude(v);
+            if (mag < 1e-10)
+                return new double[] { 0, 0, 0 };
+
+            return new double[] { v[0] / mag, v[1] / mag, v[2] / mag };
+        }
+
+        /// <summary>
+        /// Calculate the cross product of two 3D vectors: a × b
+        /// </summary>
+        private double[] VectorCross(double[] a, double[] b)
+        {
+            return new double[]
+            {
+                a[1] * b[2] - a[2] * b[1],
+                a[2] * b[0] - a[0] * b[2],
+                a[0] * b[1] - a[1] * b[0]
+            };
+        }
+
+
+        private void SerialPortInitialize(string portName, int baudRate)
+        {
+            if (serialPort == null || serialPort.PortName != portName || serialPort.BaudRate != baudRate)
+            {
+                serialPort?.Dispose();
+                serialPort = new SerialPort(portName, baudRate)
                 {
-                    PokeAndListenHeadSensorOnce();
-                    count++;
-                    Thread.Sleep(10);
-                }
+                    NewLine = "\n",
+                    ReadTimeout = 500,
+                    WriteTimeout = 100,
+                    DtrEnable = true,
+                    RtsEnable = true,
+                };
+                serialPort.Open();
+
+                // Clear any stale data
+                serialPort.DiscardInBuffer();
+                serialPort.DiscardOutBuffer();
             }
         }
 
         /// <summary>
-        /// This is the data sent by the TEENSY to the camera, minus the 4-byte header "flag" value of 0xffffffff.
-        /// Sensors are: Accel X/Y/Z, +/-32768 == +/-2G
-        ///              Temperature
-        ///              Gyro X/Y/Z, +/-32768 == +/- 500dps
-        ///              Magnetometer
+        /// Start the background thread for continuous reading
         /// </summary>
-        class HeadDataPacket
+        private void StartReadingThread()
         {
-            EyeTrackingSystemSettingsMicromedicalUSB settings;
-            string IMUReadings;
-
-            /// <summary>
-            /// TRUE when sync pulse present, every 16 frames.
-            /// </summary>
-            public bool SYNC = false;
-
-            /// <summary>
-            /// The number of frames has passed when the packet is received
-            /// </summary>
-            public UInt32 FrameCount;
-
-            public HeadDataPacket(string IMUReadings, EyeTrackingSystemSettingsMicromedicalUSB settings)
+            cancellationTokenSource = new CancellationTokenSource();
+            readThread = new Thread(() => SerialReadLoop(cancellationTokenSource.Token))
             {
-                this.settings = settings;
-                this.IMUReadings = IMUReadings;
-
-                if (IMUReadings!="")
-                {
-                    SYNC = true;
-                    FrameCount = UInt32.Parse(IMUReadings.Split(',')[0]);
-                }
-
-            }
-
-            /// <summary>
-            /// Converts the packet to HeadData
-            /// </summary>
-            /// <param name="initialSensorFrameNumber"></param>
-            /// <param name="initialCameraFrameNumber"></param>
-            /// <returns></returns>
-            public HeadData ConvertPacketToHeadData(ulong initialSensorFrameNumber, ulong initialCameraFrameNumber)
-            {
-                // Example of IMUReadings:
-                // fc, t0, t1, ax, ay, az, gx, gy, gz
-
-               string[] tokens = IMUReadings.Split(',');
-
-                var currentSensorFrameNumber = ulong.Parse(tokens[0]);
-
-                var AccelerometerX = double.Parse(tokens[3]);
-                var AccelerometerY = double.Parse(tokens[4]);
-                var AccelerometerZ = double.Parse(tokens[5]);
-
-                if (settings.UseHeadSensorRotation) 
-                {
-                    var m = settings.HeadSensorRotation;
-                    var AccelerometerX_temp = AccelerometerX * m[0][0] + AccelerometerY * m[0][1] + AccelerometerZ * m[0][2];
-                    var AccelerometerY_temp = AccelerometerX * m[1][0] + AccelerometerY * m[1][1] + AccelerometerZ * m[1][2];
-                    var AccelerometerZ_temp = AccelerometerX * m[2][0] + AccelerometerY * m[2][1] + AccelerometerZ * m[2][2];
-                    AccelerometerX = AccelerometerX_temp;
-                    AccelerometerY = AccelerometerY_temp;
-                    AccelerometerZ = AccelerometerZ_temp;
-                }
-
-                return new HeadData
-                    {
-                        TimeStamp = new ImageEyeTimestamp
-                        (
-                            seconds: 0.0,
-                            frameNumber: currentSensorFrameNumber - initialSensorFrameNumber + initialCameraFrameNumber,
-                            frameNumberRaw: currentSensorFrameNumber
-                        //frameNumberRaw: initialCameraFrameNumber
-                        ),
-
-                        GyroX = double.Parse(tokens[6]),
-                        GyroY = double.Parse(tokens[7]),
-                        GyroZ = double.Parse(tokens[8]),
-
-                        // The way the sensor is currently placed in the goggles.
-                        // The x axes points down
-                        // The y axes points forward
-                        // The z axes points out to the right
-                        // All from the point of view of the subject wearing the goggles
-                        // The values correspond with the fraction of 1G that is projected along each axis
-                        // When the subject is upright X=-1, y=0, Z=0
-
-                        AccelerometerX = AccelerometerX,
-                        AccelerometerY = AccelerometerY,
-                        AccelerometerZ = AccelerometerZ,
-
-                        MagnetometerX = 0.0,
-                        MagnetometerY = 0.0,
-                        MagnetometerZ = 0.0,
-                    };
-            }
+                IsBackground = true,
+                Name = "IMU Serial Reader"
+            };
+            readThread.Start();
+            Trace.WriteLine("IMU reading thread started.");
         }
 
+        /// <summary>
+        /// Background loop for reading serial data continuously
+        /// </summary>
+        private void SerialReadLoop(CancellationToken cancellationToken)
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                try
+                {
+                    if (serialPort == null || !serialPort.IsOpen)
+                    {
+                        Thread.Sleep(100);
+                        continue;
+                    }
+
+                    // Read a line from serial port
+                    string line = serialPort.ReadLine();
+
+                    if (string.IsNullOrWhiteSpace(line) || line.StartsWith("STREAMING") || line.StartsWith("Device"))
+                    {
+                        continue; // Skip status messages
+                    }
+
+                    // Parse the CSV data
+                    var data = ParseIMUData(line);
+                    if (data != null)
+                    {
+                        // Store in queue
+                        dataQueue.Enqueue(data);
+
+                        // Maintain queue size (keep last 2 seconds)
+                        while (dataQueue.Count > maxQueueSize)
+                        {
+                            dataQueue.TryDequeue(out _);
+                        }
+
+                        // Update latest data
+                        lock (latestDataLock)
+                        {
+                            latestData = data;
+                        }
+                    }
+                }
+                catch (TimeoutException)
+                {
+                    // Normal timeout, continue
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"[IMU Reader] Error: {ex.Message}");
+                    Thread.Sleep(10); // Brief pause on error
+                }
+            }
+
+            Trace.WriteLine("IMU reading thread stopped.");
+        }
+
+        /// <summary>
+        /// Parse CSV line into RawIMUData
+        /// Format: frame_count,timestamp,ax,ay,az,gx,gy,gz
+        /// </summary>
+        private RawIMUData? ParseIMUData(string line)
+        {
+            try
+            {
+                var tokens = line.Split(',');
+                if (tokens.Length < 8)
+                    return null;
+
+                return new RawIMUData
+                {
+                    SensorFrameCount = ulong.Parse(tokens[0]),
+                    Timestamp = double.Parse(tokens[1]),
+                    AccelX = double.Parse(tokens[2]),
+                    AccelY = double.Parse(tokens[3]),
+                    AccelZ = double.Parse(tokens[4]),
+                    GyroX = double.Parse(tokens[5]),
+                    GyroY = double.Parse(tokens[6]),
+                    GyroZ = double.Parse(tokens[7]),
+                    ReceivedTime = DateTime.UtcNow
+                };
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[IMU Parser] Failed to parse line: {line}. Error: {ex.Message}");
+                return null;
+            }
+        }
 
         private CameraEyeFlyCapture? cameraPrimary;
         private CameraEyeFlyCapture? cameraSecondary;
 
         private ulong initialCameraFrameNumber;
-        private ulong initialSensorFrameNumber;
-
         private ulong latestCameraFrameNumber;
 
         public void StartHeadSensorAndSyncWithCamera(CameraEyeFlyCapture cameraRight, CameraEyeFlyCapture cameraLeft)
@@ -188,163 +331,62 @@ namespace OpenIris
             this.cameraPrimary = cameraRight;
             this.cameraSecondary = cameraLeft;
 
-            HeadDataPacket? syncPacket = null;
-            ImageEye? syncImage = null;
-            bool cancel = false;
-            double timePacket = double.MaxValue;
-            double timeImage = 0;
+            SendSerialCommand('s');
+            Thread.Sleep(100);
 
-            Trace.WriteLine("Syncing camera and head sensor.");
-            var task = Task.Run(() =>
-            {
-                while (!cancel && Math.Abs(timeImage - timePacket) > 2 / cameraRight.FrameRate)
-                {
-                    var image = cameraPrimary.GrabImageEye();
-                    PokeAndListenHeadSensorOnce();
+            StartReadingThread();
 
-                    // If there was no packet sleep a bit and come back later because
-                    // the call to GetPacket is not blocking
-                    if (serialPort == null | RawDataString == "")
-                    {
-                        Thread.Sleep(2);
-                        continue;
-                    }
+            Thread.Sleep(500);
 
-                    var packet = new HeadDataPacket(RawDataString, settings);
+            TriggerHeadSensorSyncPulse();
 
-                    if (packet.SYNC)
-                    {
-                        syncPacket = packet;
-                        syncImage = image;
-                        timePacket = EyeTrackerDebug.TimeElapsed.TotalSeconds;
-                        timeImage = EyeTrackerDebug.TimeElapsed.TotalSeconds;
-                    }
-                }
-            });
-
-            //var task2 = Task.Run(() =>
-            //{
-                // could potentially add this part to sync two cameras using led
-            //});
-
-            var finishedBeforeTimeout = Task.WaitAll(new Task[] { task }, 2000); // 5s timeout
-
-            Trace.WriteLine($"Finished syncing camera and head sensor. Diff time= {Math.Abs(timeImage - timePacket)}");
-
-            if (finishedBeforeTimeout && !task.IsFaulted )
-            {
-                initialCameraFrameNumber = syncImage.TimeStamp.FrameNumberRaw;
-                initialSensorFrameNumber = syncPacket.FrameCount;
-
-                Trace.WriteLine($"Initial Camera Frame{initialCameraFrameNumber}");
-                Trace.WriteLine($"Initial Sensor Frame{initialSensorFrameNumber}");
-            }
-            else
-            {
-                cancel = true;
-                if (task.IsFaulted) throw task.Exception;
-
-                throw new OpenIrisException("Head sensor does not seem to be present or sync pattern not detected. Change the settings.");
-            }
-
+            var syncImage = cameraPrimary.GrabImageEye();
+            initialCameraFrameNumber = syncImage.TimeStamp.FrameNumberRaw;
             latestCameraFrameNumber = initialCameraFrameNumber;
+
+            Trace.WriteLine($"Initial Camera Frame: {initialCameraFrameNumber}");
+            Trace.WriteLine("Camera and head sensor sync complete.");
         }
 
         public void TriggerHeadSensorSyncPulse()
         {
-            SendSerialData("1", appendNewLine: true);
-            System.Diagnostics.Debug.WriteLine($"[Serial] Sent start/stop recording signal to {comPort}");
+            SendSerialCommand('1');
+            Debug.WriteLine($"[Serial] Sent sync pulse signal to {comPort}");
         }
 
-        private void SerialPortInitialize(string portName, int baudRate)
-        {
-            if (serialPort == null || serialPort.PortName != portName || serialPort.BaudRate != baudRate)
-            {
-                serialPort?.Dispose(); // Dispose the existing port if it doesn't match
-                serialPort = new SerialPort(portName, baudRate)
-                {
-                    NewLine = "\n",
-                    ReadTimeout = 100,
-                    WriteTimeout = 100,
-                    DtrEnable = true,
-                    RtsEnable = true,
-                };
-                serialPort.Open();
-            }
-        }
-
-        private void SendSerialData(string payload, bool appendNewLine = true)
+        private void SendSerialCommand(char command)
         {
             if (serialPort == null || !serialPort.IsOpen)
             {
                 throw new InvalidOperationException("Serial port is not initialized or open.");
             }
 
-            if (appendNewLine)
-                serialPort.WriteLine(payload);
-            else
-                serialPort.Write(payload);
+            serialPort.WriteLine(command.ToString());
         }
 
         public double TestHeadSensorDelay()
         {
             var stopwatch = new Stopwatch();
             stopwatch.Start();
-            PokeAndListenHeadSensorOnce();
-            stopwatch.Stop();
-            if (RawDataString != null)
+
+            RawIMUData? testData;
+            lock (latestDataLock)
             {
-                //string[] tokens = RawDataString.Split(',');
-                //Trace.WriteLine($"Head sensor packet received in {stopwatch.ElapsedMilliseconds} ms.");
-                //Trace.WriteLine($"Head sensor data: ax = {tokens[2]}, ay = {tokens[3]}, az = {tokens[4]}, gx = {tokens[5]}, gy = {tokens[6]}, gz = {tokens[7]}");
+                testData = latestData;
+            }
+
+            stopwatch.Stop();
+
+            if (testData != null)
+            {
+                Trace.WriteLine($"Latest IMU data retrieved in {stopwatch.ElapsedMilliseconds} ms.");
+                Trace.WriteLine($"IMU data: timestamp={testData.Timestamp}, ax = {testData.AccelX:F6}, ay = {testData.AccelY:F6}, az = {testData.AccelZ:F6}");
                 return stopwatch.ElapsedMilliseconds;
             }
             else
             {
-                Trace.WriteLine("Failed to receive head sensor packet.");
+                Trace.WriteLine("No IMU data available.");
                 return 0;
-            }
-        }
-
-        private string? lastValidRawDataString = null;
-
-        private void PokeAndListenHeadSensorOnce()
-        {
-            const string payload = "2\n";
-
-            if (serialPort == null || !serialPort.IsOpen)
-            {
-                throw new InvalidOperationException("Serial port is not initialized or open.");
-            }
-
-            try
-            {
-                serialPort.DiscardInBuffer();
-                serialPort.DiscardOutBuffer();
-
-                serialPort.Write(payload);
-
-                RawDataString = "";
-                RawDataString = serialPort.ReadLine();
-
-                if (!string.IsNullOrEmpty(RawDataString))
-                {
-                    lastValidRawDataString = RawDataString;
-                }
-            }
-            catch (TimeoutException ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"[Serial] Timeout: {ex.Message}");
-
-                if (lastValidRawDataString != null)
-                {
-                    RawDataString = lastValidRawDataString;
-                }
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"[Serial] Error: {ex.Message}");
-                throw;
             }
         }
 
@@ -354,28 +396,90 @@ namespace OpenIris
 
             if (LST.FrameNumberRaw > latestCameraFrameNumber)
             {
-                PokeAndListenHeadSensorOnce();
-                
-                if (string.IsNullOrEmpty(RawDataString))
+                RawIMUData? currentData;
+                lock (latestDataLock)
                 {
-                    System.Diagnostics.Debug.WriteLine("[Serial] No valid data available to create a packet.");
+                    currentData = latestData;
+                }
+
+                if (currentData == null)
+                {
+                    Debug.WriteLine("[IMU] No valid data available.");
                     return null;
                 }
-                
-                var packet = new HeadDataPacket(RawDataString, settings);
-                latestCameraFrameNumber++;
-                return packet.ConvertPacketToHeadData(initialSensorFrameNumber, initialCameraFrameNumber);
-            }
-            else return null;
 
+                latestCameraFrameNumber = LST.FrameNumberRaw;
+
+                // Apply calibration offsets
+                var accelX = currentData.AccelX - calibrationOffsetX;
+                var accelY = currentData.AccelY - calibrationOffsetY;
+                var accelZ = currentData.AccelZ - calibrationOffsetZ;
+
+                // Apply rotation if needed
+                if (settings.UseHeadSensorRotation)
+                {
+                    var m = settings.HeadSensorRotation;
+                    var accelX_temp = accelX * m[0][0] + accelY * m[0][1] + accelZ * m[0][2];
+                    var accelY_temp = accelX * m[1][0] + accelY * m[1][1] + accelZ * m[1][2];
+                    var accelZ_temp = accelX * m[2][0] + accelY * m[2][1] + accelZ * m[2][2];
+                    accelX = accelX_temp;
+                    accelY = accelY_temp;
+                    accelZ = accelZ_temp;
+                }
+
+                return new HeadData
+                {
+                    TimeStamp = new ImageEyeTimestamp
+                    (
+                        seconds: 0.0,
+                        frameNumber: latestCameraFrameNumber - initialCameraFrameNumber,
+                        frameNumberRaw: latestCameraFrameNumber
+                    ),
+
+                    GyroX = currentData.GyroX,
+                    GyroY = currentData.GyroY,
+                    GyroZ = currentData.GyroZ,
+
+                    AccelerometerX = accelX,
+                    AccelerometerY = accelY,
+                    AccelerometerZ = accelZ,
+
+                    MagnetometerX = 0.0,
+                    MagnetometerY = 0.0,
+                    MagnetometerZ = 0.0,
+                };
+            }
+            else
+            {
+                return null;
+            }
         }
 
         public void Stop()
         {
+            // Stop streaming
+            try
+            {
+                SendSerialCommand('x');
+            }
+            catch { }
+
+            // Stop reading thread
+            cancellationTokenSource?.Cancel();
+
+            if (readThread != null && readThread.IsAlive)
+            {
+                readThread.Join(1000); // Wait up to 1 second
+            }
+
+            cancellationTokenSource?.Dispose();
+
             cameraPrimary = null;
             cameraSecondary = null;
             serialPort?.Close();
+            serialPort?.Dispose();
+
+            Trace.WriteLine("Head sensor stopped.");
         }
     }
-
 }
