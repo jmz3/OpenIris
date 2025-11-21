@@ -217,19 +217,6 @@ namespace OpenIris
                 }
             }
         }
-
-        /// <summary>
-        /// Function to calibrate the head sensor if supported.
-        /// </summary>
-        public async Task StartCalibration()
-        {
-            if (!grabbing) return;
-            if (headDataSource is null) return;
-            if (headDataSource is IHeadSensorCalibrable calibrable)
-            {
-                await Task.Run(() => calibrable.CalibrateHeadSensor());
-            }
-        }
     }
 
     /// <summary>
@@ -249,14 +236,4 @@ namespace OpenIris
         void Stop();
     }
 
-    /// <summary>
-    /// Interface for head data sources that support calibration.
-    /// </summary>
-    public interface IHeadSensorCalibrable
-    {
-        /// <summary>
-        /// Calibrates the head sensor.
-        /// </summary>
-        void CalibrateHeadSensor();
-    }
 }

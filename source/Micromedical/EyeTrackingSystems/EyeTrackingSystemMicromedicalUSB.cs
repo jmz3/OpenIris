@@ -15,6 +15,7 @@ namespace OpenIris
     using System.IO.Ports;
     using static OpenIris.HeadTracker;
     using Emgu.CV;
+    using System.Windows.Forms;
 
     /// <summary>
     /// Micromedical system.
@@ -124,6 +125,25 @@ namespace OpenIris
         /// 
         /// </summary>
         public override IHeadDataSource CreateHeadDataSourceWithCameras() => headSensor;
+
+        public override ToolStripMenuItem[] GetToolStripMenuItems()
+        {
+            var menuItemCalibrateHeadSensor = new ToolStripMenuItem();
+            menuItemCalibrateHeadSensor.Click += menuItemCalibrateHeadSensor_Click;
+            menuItemCalibrateHeadSensor.Text = "Calibrate head sensor";
+            menuItemCalibrateHeadSensor.Enabled = headSensor is IHeadSensorCalibrable;
+
+            var menuItemSomethingElse = new ToolStripMenuItem();
+            menuItemSomethingElse.Text = "Test";
+            return new ToolStripMenuItem[] { menuItemCalibrateHeadSensor, menuItemSomethingElse };
+        }
+
+        private void menuItemCalibrateHeadSensor_Click(object sender, EventArgs e)
+        {
+           var h = headSensor as HeadSensorSeeednRF52840;
+
+            h.CalibrateHeadSensor();
+        }
     }
 
     /// <summary>

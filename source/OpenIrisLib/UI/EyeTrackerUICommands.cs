@@ -116,12 +116,6 @@ namespace OpenIris
             StartCalibrationCommand = new EyeTrackerUICommand(
                     execute: async _ =>
                     {
-                        // Execute head tracker calibration if enabled
-                        if (eyeTracker.HeadTracker != null)
-                        {
-                            await eyeTracker.HeadTracker.StartCalibration();
-                        }
-
                         // Execute eye tracker calibration
                         await eyeTracker.StartCalibration();
                     },

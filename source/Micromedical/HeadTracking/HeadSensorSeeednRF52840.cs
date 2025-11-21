@@ -482,4 +482,15 @@ namespace OpenIris
             Trace.WriteLine("Head sensor stopped.");
         }
     }
+
+    /// <summary>
+    /// Interface for head data sources that support calibration.
+    /// </summary>
+    public interface IHeadSensorCalibrable
+    {
+        /// <summary>
+        /// Calibrates the head sensor.
+        /// </summary>
+        void CalibrateHeadSensor();
+    }
 }
